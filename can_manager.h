@@ -394,22 +394,33 @@ typedef struct
  */
 typedef struct CANMGR_Handle_s
 {
-    /* ---- Публичные поля (можно читать снаружи для диагностики) ---- */
-    CANMGR_Config_t config;             /* копия того, что передали в Init */
-    uint32_t        bus_off_count;      /* см. CANMGR_GetBusOffCount */
-    uint32_t        rx_overflow_count;  /* см. CANMGR_GetRxOverflowCount */
-    uint16_t        tx_queue_depth;     /* текущая длина очереди отправки, для диагностики */
-    uint8_t         index;              /* позиция в пуле шин (для справки) */
+    /* ---- Публичные поля (можно читать снаружи для диагностики) ----
+     * bus_off_count/rx_overflow_count/tx_queue_depth - volatile: пишутся
+     * из обработчиков прерываний (CANMGR_ErrorStatus_Handler,
+     * canmgr_service_queue), читаются из обычного кода (в т.ч. геттерами
+     * ниже) без единой блокировки на чтение. На Cortex-M выровненное
+     * чтение/запись uint16_t/uint32_t - атомарная шинная транзакция (не
+     * рвётся), но БЕЗ volatile компилятор вправе закэшировать значение в
+     * регистре поперёк цикла/нескольких обращений, если с его точки
+     * зрения (без знания о прерываниях) память "не могла измениться" -
+     * особенно опасно в пользовательском коде вида `while
+     * (CANMGR_GetTxQueueDepth(bus) > 0) {}`, если геттер заинлайнен в
+     * тесный цикл без других непрозрачных вызовов между итерациями. */
+    CANMGR_Config_t  config;               /* копия того, что передали в Init */
+    volatile uint32_t bus_off_count;       /* см. CANMGR_GetBusOffCount */
+    volatile uint32_t rx_overflow_count;   /* см. CANMGR_GetRxOverflowCount */
+    volatile uint16_t tx_queue_depth;      /* текущая длина очереди отправки, для диагностики */
+    uint8_t          index;                /* позиция в пуле шин (для справки) */
 
     /* ---- Внутреннее состояние - не трогать напрямую, только через API ---- */
-    uint8_t              used;             /* слот пула занят */
+    uint8_t               used;             /* слот пула занят */
     canmgr_filter_t       filters[CANMGR_MAX_FILTERS_PER_BUS];  /* пул зарегистрированных фильтров */
-    uint16_t              filter_count;    /* фактически занято в filters[] */
+    uint16_t              filter_count;     /* фактически занято в filters[] */
     canmgr_mask_group_t   mask_groups[CANMGR_MAX_MASK_GROUPS];  /* группы быстрой диспетчеризации */
     uint8_t               mask_group_count; /* фактически занято в mask_groups[] */
     canmgr_tx_item_t      tx_queue[CANMGR_TX_QUEUE_SIZE];       /* кольцевая очередь отправки */
-    uint16_t              tx_head;         /* индекс головы очереди (следующий на отправку) */
-    uint16_t              tx_tail;         /* индекс хвоста очереди (следующий свободный слот) */
+    uint16_t              tx_head;          /* индекс головы очереди - трогает только canmgr_service_queue, всегда под __disable_irq */
+    uint16_t              tx_tail;          /* индекс хвоста очереди - трогает только CANMGR_Send, всегда под __disable_irq */
 } CANMGR_Handle_t;
 
 /* -------------------------------------------------------------------- */
