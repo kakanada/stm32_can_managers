@@ -229,21 +229,48 @@ static uint8_t port_receive(CANMGR_CAN_HandleTypeDef *hcan, uint32_t *id,
 
 #else /* CANMGR_BACKEND_BXCAN */
 
-/** Банки фильтров 0..27 у чипов с CAN1+CAN2 физически общие на обе
- *  периферии (регистр общий на пару). Каждая инициализированная здесь шина
- *  получает свой банк по номеру индекса в пуле - этого достаточно, т.к. на
- *  шину нужен всего один широкий (accept-all) банк, реальная фильтрация -
- *  программная (см. can_manager.h). На чипах с одним CAN (STM32F0 и т.п.)
- *  SlaveStartFilterBank этим значением просто не используется HAL. */
+/** Банки фильтров 0..27 у чипов с CAN1+CAN2 физически ОБЩИЙ регистровый
+ *  ресурс на обе периферии, но не взаимозаменяемый: банки [0 ..
+ *  CANMGR_BXCAN_SLAVE_START_BANK) аппаратно принадлежат master-у (CAN1),
+ *  банки [CANMGR_BXCAN_SLAVE_START_BANK .. 28) - slave-у (CAN2). Эта
+ *  граница задаётся полем SlaveStartFilterBank и одинакова для ВСЕХ
+ *  банков на обеих периферих одновременно - если шине на CAN2 назначить
+ *  номер банка из диапазона CAN1 (что и происходило раньше при наивном
+ *  использовании общего индекса шины в пуле как номера банка), реально
+ *  конфигурируется банк, принадлежащий CAN1, а не CAN2 - фильтрация
+ *  CAN1 при этом молча ломается, а CAN2 остаётся без рабочего фильтра.
+ *  Поэтому номер банка выделяется НИЖЕ отдельным счётчиком на каждый из
+ *  двух физических инстансов, а не просто индексом шины в общем пуле. */
 #define CANMGR_BXCAN_SLAVE_START_BANK   14U
+
+/** Выделяет следующий свободный номер банка для конкретного физического
+ *  инстанса (CAN1 либо CAN2 - см. обоснование выше). Раздельные счётчики
+ *  на инстанс переживают отдельные вызовы CANMGR_Init() (static) - банк
+ *  не переиспользуется, даже если конкретная инициализация впоследствии
+ *  завершится неудачей (см. CANMGR_Init) - это безопасный, но не строго
+ *  экономный выбор: 28 банков с большим запасом хватает на реалистичное
+ *  число шин (CANMGR_MAX_BUSES по умолчанию - 4). */
+static uint32_t port_alloc_filter_bank(const CANMGR_CAN_HandleTypeDef *hcan)
+{
+#if defined(CAN2)
+    static uint32_t s_can2_banks_used = 0U;
+    if (hcan->Instance == CAN2)
+    {
+        return CANMGR_BXCAN_SLAVE_START_BANK + s_can2_banks_used++;
+    }
+#else
+    (void)hcan; /* чипы без CAN2 (STM32F0 и т.п.) - все банки принадлежат единственному CAN */
+#endif
+    static uint32_t s_can1_banks_used = 0U;
+    return s_can1_banks_used++;
+}
 
 static HAL_StatusTypeDef port_configure_filter(CANMGR_CAN_HandleTypeDef *hcan)
 {
     CAN_FilterTypeDef filter;
-    CANMGR_Handle_t *bus = canmgr_find_bus(hcan);
 
     memset(&filter, 0, sizeof(filter));
-    filter.FilterBank           = (bus != NULL) ? bus->index : 0U;
+    filter.FilterBank           = port_alloc_filter_bank(hcan);
     filter.FilterMode           = CAN_FILTERMODE_IDMASK;
     filter.FilterScale          = CAN_FILTERSCALE_32BIT;
     filter.FilterIdHigh         = 0U;
@@ -320,7 +347,21 @@ static uint8_t port_receive(CANMGR_CAN_HandleTypeDef *hcan, uint32_t *id,
 
     *is_extended = (header.IDE == CAN_ID_EXT) ? 1U : 0U;
     *id          = *is_extended ? header.ExtId : header.StdId;
-    *len         = (uint8_t)header.DLC;
+
+    /* header.DLC - 4-битное аппаратное поле (0..15) как пришло с провода.
+     * Classic CAN гарантирует полезную нагрузку не более 8 байт, но само
+     * поле DLC способно физически нести 9..15 (неисправный или недобро-
+     * совестный узел на шине может это выставить - HAL считывает регистр
+     * как есть, без клампа). Буфер data[], в который HAL уже записал
+     * данные несколькими строками выше, имеет размер ровно
+     * CANMGR_MAX_DATA_LEN - без клампа здесь потребитель получил бы
+     * len > CANMGR_MAX_DATA_LEN и мог прочитать data[] за границей буфера
+     * (переполнение чтения стека), спровоцированное чужим кадром на шине. */
+    *len = (uint8_t)header.DLC;
+    if (*len > CANMGR_MAX_DATA_LEN)
+    {
+        *len = CANMGR_MAX_DATA_LEN;
+    }
     return 1U;
 }
 
@@ -462,6 +503,15 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
         return CANMGR_REG_ERR_INVALID_ARG;
     }
 
+    /* Нормализуем is_extended строго к 0/1 - CANMGR_RxFifo_Handler всегда
+     * передаёт в canmgr_dispatch_frame ровно 0 либо 1 (см. port_receive
+     * обоих бэкендов), а сравнение там - строгое (!=), не булево. Без этой
+     * нормализации вызывающий код, передавший сюда любое другое ненулевое
+     * значение (например бит из битовой маски флагов, а не буквальную
+     * единицу), зарегистрировал бы фильтр, который НИКОГДА не совпадёт ни
+     * с одним реально принятым кадром - тихий, трудно диагностируемый баг. */
+    is_extended = (is_extended != 0U) ? 1U : 0U;
+
     /* Обрезаем id/mask до реального адресного пространства кадра - лишние
      * старшие биты не должны участвовать в проверке пересечений. */
     uint32_t space_mask = is_extended ? 0x1FFFFFFFU : 0x7FFU;
@@ -519,7 +569,24 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
     bus->filter_count++;
 
     /* Вставка в отсортированный по (id & mask) массив группы - вставка
-     * редкая (регистрация), сдвиг хвоста массива на один элемент допустим. */
+     * редкая (регистрация), сдвиг хвоста массива на один элемент допустим.
+     *
+     * КРИТИЧЕСКАЯ СЕКЦИЯ: пока элементы сдвигаются, массив group->sorted_key
+     * временно находится в промежуточном, не полностью упорядоченном
+     * состоянии (значение, которое "сдвигается" в соседний индекс, на один
+     * шаг присутствует одновременно в двух позициях, а старое значение
+     * ещё не записано на новое место). CANMGR_RxFifo_Handler может прийти
+     * по прерыванию В ЛЮБОЙ момент - в т.ч. между инициализацией одного
+     * потребителя и другого, когда шина уже реально принимает трафик для
+     * уже зарегистрированных ранее фильтров (регистрация нарочно не
+     * привязана к моменту "до первого кадра на шине", см. can_manager.h).
+     * Без запрета прерываний здесь canmgr_dispatch_frame(), выполняющий
+     * бинарный поиск по этому же массиву ровно в этот момент, мог бы
+     * временно не найти уже существующий, корректно зарегистрированный
+     * фильтр - кадр был бы молча потерян не из-за отсутствия подписки, а
+     * из-за гонки при регистрации СОВСЕМ ДРУГОГО фильтра. */
+    __disable_irq();
+
     uint32_t key = id & mask;
     uint16_t pos = canmgr_lower_bound(group->sorted_key, group->count, key);
     for (uint16_t i = group->count; i > pos; i--)
@@ -530,6 +597,8 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
     group->sorted_key[pos]   = key;
     group->filter_index[pos] = filter_idx;
     group->count++;
+
+    __enable_irq();
 
     return CANMGR_REG_OK;
 }
