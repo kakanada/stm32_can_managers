@@ -5,7 +5,7 @@
  *          архитектурные решения и обоснования в шапке can_manager.h.
  * @author  Mechanic
  * @date    18.09.2026
- * @version 0.2
+ * @version 0.3
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
