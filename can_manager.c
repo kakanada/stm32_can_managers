@@ -4,8 +4,8 @@
  * @brief   Реализация единого менеджера шины CAN/FDCAN для STM32 - см.
  *          архитектурные решения и обоснования в шапке can_manager.h.
  * @author  Mechanic
- * @date    17.09.2026
- * @version 0.1
+ * @date    18.09.2026
+ * @version 0.2
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -653,6 +653,51 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
 
     __enable_irq();
     return HAL_OK;
+}
+
+HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_extended,
+                                     const uint8_t *data, uint8_t len)
+{
+    if ((bus == NULL) || ((data == NULL) && (len > 0U)))
+    {
+        return HAL_ERROR;
+    }
+    if (len > CANMGR_MAX_DATA_LEN)
+    {
+        len = CANMGR_MAX_DATA_LEN;
+    }
+
+    /* Ищем уже стоящий в ПРОГРАММНОЙ очереди пакет с тем же (id,
+     * is_extended) - обходим ровно bus->tx_queue_depth слотов начиная с
+     * головы, как они реально идут по кольцевому буферу (см. обоснование
+     * второго режима отправки в шапке can_manager.h). Если находим -
+     * подменяем данные ПРЯМО В ЭТОМ СЛОТЕ, не трогая tx_head/tx_tail и,
+     * тем самым, не меняя позицию пакета в очереди. Пакет, уже покинувший
+     * программную очередь (ушедший в аппаратный буфер), этим поиском не
+     * достаётся - и не должен: он уже был самым актуальным значением на
+     * момент, когда до него дошла очередь. */
+    __disable_irq();
+    for (uint16_t n = 0U; n < bus->tx_queue_depth; n++)
+    {
+        uint16_t idx = (uint16_t)((bus->tx_head + n) % CANMGR_TX_QUEUE_SIZE);
+        canmgr_tx_item_t *item = &bus->tx_queue[idx];
+        if ((item->id == id) && (item->is_extended == is_extended))
+        {
+            item->len = len;
+            if (len > 0U)
+            {
+                memcpy(item->data, data, len);
+            }
+            __enable_irq();
+            return HAL_OK;
+        }
+    }
+    __enable_irq();
+
+    /* Пакета с таким id в очереди нет - обычная отправка: прямо в
+     * аппаратный буфер (если очередь пуста и есть место) либо новым
+     * пакетом в хвост очереди - см. CANMGR_Send(). */
+    return CANMGR_Send(bus, id, is_extended, data, len);
 }
 
 uint32_t CANMGR_GetBusOffCount(const CANMGR_Handle_t *bus)
