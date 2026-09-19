@@ -11,6 +11,7 @@
 - [Отправка](#отправка)
 - [Диагностика](#диагностика)
 - [Обработчики прерываний](#обработчики-прерываний)
+- [Интеграция с stm32_logger](#интеграция-с-stm32_logger)
 
 ## Типы
 
@@ -179,3 +180,28 @@ HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t i
 
 Каждый обработчик сам проверяет, что `hcan` относится к одной из инициализированных здесь шин, и
 тихо выходит, если нет - несколько модулей могут безопасно делить один и тот же HAL-callback.
+
+## Интеграция с stm32_logger
+
+Опциональная, необязательная зависимость - см. "ОПЦИОНАЛЬНАЯ ИНТЕГРАЦИЯ С stm32_logger" в шапке
+`can_manager.h`. Включается парой независимых define'ов:
+
+| Define | Где | Назначение |
+|---|---|---|
+| `CANMGR_ENABLE_LOGGER` | до `#include "can_manager.h"` | Включает вызовы `LOGGER_Log()` внутри `can_manager.c`. Без него `logger.h` не подключается вовсе. |
+| `LOGGER_ENABLE_CANMGR` | до `#include "logger_codes.h"` | Включает блок кодов `LOG_CODE_CANMGR_*` в таблице `LOGGER_LogTable` проекта. |
+
+Коды, которые использует `can_manager.c` (адресное пространство и приоритеты закреплены в
+`logger_codes.h` проекта, согласованы с автором stm32_logger):
+
+| Код | Приоритет | Когда | `value` |
+|---|---|---|---|
+| `LOG_CODE_CANMGR_INIT_OK` | LOW | `CANMGR_Init()` успешно завершена | `0` |
+| `LOG_CODE_CANMGR_INIT_FAIL` | HIGH | `CANMGR_Init()` - исчерпан `CANMGR_MAX_BUSES` либо ошибка HAL | `0` |
+| `LOG_CODE_CANMGR_REG_REJECTED` | MEDIUM | `CANMGR_RegisterFilter()` вернула не `CANMGR_REG_OK` (кроме `CANMGR_REG_ERR_INVALID_ARG`) | код `CANMGR_RegStatus_t` |
+| `LOG_CODE_CANMGR_TX_QUEUE_FULL` | HIGH | `CANMGR_Send()`/`CANMGR_SendLatest()` отклонили пакет - очередь переполнена | `id` кадра |
+| `LOG_CODE_CANMGR_RX_OVERFLOW` | MEDIUM | Переполнение аппаратного Rx FIFO0 | `rx_overflow_count` после инкремента |
+| `LOG_CODE_CANMGR_BUS_OFF` | HIGH | Обнаружен и автовосстановлен Bus-Off | `bus_off_count` после инкремента |
+
+Во всех случаях `source_id` в `LOGGER_Log()` - это `bus->index` (при исчерпании `CANMGR_MAX_BUSES`,
+когда конкретной шины ещё нет, - `0xFFFF`).
