@@ -4,8 +4,8 @@
  * @brief   Реализация единого менеджера шины CAN/FDCAN для STM32 - см.
  *          архитектурные решения и обоснования в шапке can_manager.h.
  * @author  Mechanic
- * @date    18.09.2026
- * @version 0.3
+ * @date    19.09.2026
+ * @version 0.4
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -15,6 +15,24 @@
 
 #include <string.h>
 #include "can_manager.h"
+
+/* ========================================================================
+ *  Опциональная зависимость от stm32_logger (см. README.md за подробностями).
+ *  Включается пользователем библиотеки через "#define CANMGR_ENABLE_LOGGER"
+ *  до включения can_manager.h/.c - без него библиотека собирается и работает
+ *  ровно как раньше, logger.h вообще не подключается. Коды LOG_CODE_CANMGR_*
+ *  и их приоритеты/описания живут не здесь, а в logger_codes.h конкретного
+ *  проекта (единая точка учёта адресных пространств кодов, см. правила
+ *  интеграции в logger_codes.h) - can_manager только вызывает LOGGER_Log()
+ *  с уже готовыми кодами, никогда не хранит числовые коды сам.
+ * ======================================================================== */
+#ifdef CANMGR_ENABLE_LOGGER
+#include "logger.h"
+#include "logger_codes.h"
+#define CANMGR_LOG(code, source_id, value) LOGGER_Log((code), (uint16_t)(source_id), (int32_t)(value))
+#else
+#define CANMGR_LOG(code, source_id, value) ((void)0)
+#endif
 
 /* ========================================================================
  *  Статический пул шин (без malloc, как во всех библиотеках этой базы)
@@ -475,6 +493,7 @@ CANMGR_Handle_t *CANMGR_Init(const CANMGR_Config_t *config)
     bus = canmgr_find_free_bus();
     if (bus == NULL)
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_INIT_FAIL, 0xFFFFU, 0); /* пул шин исчерпан, конкретной шины ещё нет */
         return NULL; /* исчерпан CANMGR_MAX_BUSES */
     }
 
@@ -487,10 +506,12 @@ CANMGR_Handle_t *CANMGR_Init(const CANMGR_Config_t *config)
         (port_activate_notifications(bus->config.hcan) != HAL_OK) ||
         (port_start(bus->config.hcan) != HAL_OK))
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_INIT_FAIL, bus->index, 0);
         bus->used = 0U; /* освобождаем слот - инициализация не удалась */
         return NULL;
     }
 
+    CANMGR_LOG(LOG_CODE_CANMGR_INIT_OK, bus->index, 0);
     return bus;
 }
 
@@ -530,12 +551,14 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
         }
         if (((f->id ^ id) & f->mask & mask) == 0U)
         {
+            CANMGR_LOG(LOG_CODE_CANMGR_REG_REJECTED, bus->index, CANMGR_REG_ERR_OVERLAP);
             return CANMGR_REG_ERR_OVERLAP;
         }
     }
 
     if (bus->filter_count >= CANMGR_MAX_FILTERS_PER_BUS)
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_REG_REJECTED, bus->index, CANMGR_REG_ERR_FILTERS_FULL);
         return CANMGR_REG_ERR_FILTERS_FULL;
     }
 
@@ -544,6 +567,7 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
     {
         if (bus->mask_group_count >= CANMGR_MAX_MASK_GROUPS)
         {
+            CANMGR_LOG(LOG_CODE_CANMGR_REG_REJECTED, bus->index, CANMGR_REG_ERR_TOO_MANY_MASKS);
             return CANMGR_REG_ERR_TOO_MANY_MASKS;
         }
         group = &bus->mask_groups[bus->mask_group_count++];
@@ -555,6 +579,7 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
 
     if (group->count >= CANMGR_MAX_FILTERS_PER_GROUP)
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_REG_REJECTED, bus->index, CANMGR_REG_ERR_GROUP_FULL);
         return CANMGR_REG_ERR_GROUP_FULL;
     }
 
@@ -637,6 +662,7 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
     if (bus->tx_queue_depth >= CANMGR_TX_QUEUE_SIZE)
     {
         __enable_irq();
+        CANMGR_LOG(LOG_CODE_CANMGR_TX_QUEUE_FULL, bus->index, id);
         return HAL_ERROR; /* очередь переполнена */
     }
 
@@ -785,10 +811,12 @@ void CANMGR_ErrorStatus_Handler(CANMGR_CAN_HandleTypeDef *hcan, uint32_t ErrorSt
     {
         bus->bus_off_count++;
         port_bus_off_recover(hcan); /* см. can_manager.h - FDCAN сам из Bus-Off не выходит */
+        CANMGR_LOG(LOG_CODE_CANMGR_BUS_OFF, bus->index, bus->bus_off_count);
     }
     if ((ErrorStatusITs & FDCAN_IT_RX_FIFO0_MESSAGE_LOST) != 0U)
     {
         bus->rx_overflow_count++;
+        CANMGR_LOG(LOG_CODE_CANMGR_RX_OVERFLOW, bus->index, bus->rx_overflow_count);
     }
 }
 #else
@@ -806,10 +834,12 @@ void CANMGR_ErrorStatus_Handler(CANMGR_CAN_HandleTypeDef *hcan)
     {
         bus->bus_off_count++;
         port_bus_off_recover(hcan); /* см. can_manager.h - без ABOM bxCAN сам из Bus-Off не выходит */
+        CANMGR_LOG(LOG_CODE_CANMGR_BUS_OFF, bus->index, bus->bus_off_count);
     }
     if ((err & HAL_CAN_ERROR_RX_FOV0) != 0U)
     {
         bus->rx_overflow_count++;
+        CANMGR_LOG(LOG_CODE_CANMGR_RX_OVERFLOW, bus->index, bus->rx_overflow_count);
     }
 }
 #endif
