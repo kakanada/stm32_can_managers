@@ -2,7 +2,7 @@
  ******************************************************************************
  * @file    can_manager.c
  * @brief   Реализация единого менеджера шины CAN/FDCAN для STM32 - см.
- *          архитектурные решения и обоснования в шапке can_manager.h.
+ *          README.md / API_REFERENCE.md за архитектурой и API.
  * @author  Mechanic
  * @date    19.09.2026
  * @version 0.4
@@ -121,8 +121,7 @@ static uint16_t canmgr_lower_bound(const uint32_t *sorted, uint16_t count, uint3
  *  Аппаратный уровень (port_*) - здесь и только здесь код различается
  *  между бэкендами FDCAN и bxCAN. Подход и восстановление после Bus-Off
  *  переиспользуют проверенную на практике механику can_vesc_stm32/
- *  motor_vesc.c (референс на чтение, см. AGENTS.md проекта) - см.
- *  обоснование в шапке can_manager.h.
+ *  motor_vesc.c (референс на чтение, см. AGENTS.md проекта).
  * ======================================================================== */
 
 #if defined(CANMGR_BACKEND_FDCAN)
@@ -437,8 +436,7 @@ static void canmgr_dispatch_frame(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_
 }
 
 /* ========================================================================
- *  Программная очередь отправки - строгий FIFO, единый на шину (см.
- *  обоснование выбора против round-robin в шапке can_manager.h)
+ *  Программная очередь отправки - строгий FIFO, единый на шину
  * ======================================================================== */
 
 /** Продвигает очередь отправки: пока в очереди есть пакеты и в аппаратном
@@ -540,8 +538,8 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
     mask &= space_mask;
 
     /* Проверка пересечения со ВСЕМИ уже зарегистрированными фильтрами на
-     * этой шине (см. формулу и обоснование в шапке can_manager.h) - редкая
-     * операция (регистрация), может себе позволить честный O(N) перебор. */
+     * этой шине - редкая операция (регистрация), может себе позволить
+     * честный O(N) перебор. */
     for (uint32_t i = 0U; i < bus->filter_count; i++)
     {
         canmgr_filter_t *f = &bus->filters[i];
@@ -604,7 +602,7 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
      * по прерыванию В ЛЮБОЙ момент - в т.ч. между инициализацией одного
      * потребителя и другого, когда шина уже реально принимает трафик для
      * уже зарегистрированных ранее фильтров (регистрация нарочно не
-     * привязана к моменту "до первого кадра на шине", см. can_manager.h).
+     * привязана к моменту "до первого кадра на шине").
      * Без запрета прерываний здесь canmgr_dispatch_frame(), выполняющий
      * бинарный поиск по этому же массиву ровно в этот момент, мог бы
      * временно не найти уже существующий, корректно зарегистрированный
@@ -695,8 +693,7 @@ HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t i
 
     /* Ищем уже стоящий в ПРОГРАММНОЙ очереди пакет с тем же (id,
      * is_extended) - обходим ровно bus->tx_queue_depth слотов начиная с
-     * головы, как они реально идут по кольцевому буферу (см. обоснование
-     * второго режима отправки в шапке can_manager.h). Если находим -
+     * головы, как они реально идут по кольцевому буферу. Если находим -
      * подменяем данные ПРЯМО В ЭТОМ СЛОТЕ, не трогая tx_head/tx_tail и,
      * тем самым, не меняя позицию пакета в очереди. Пакет, уже покинувший
      * программную очередь (ушедший в аппаратный буфер), этим поиском не
@@ -810,7 +807,7 @@ void CANMGR_ErrorStatus_Handler(CANMGR_CAN_HandleTypeDef *hcan, uint32_t ErrorSt
     if ((ErrorStatusITs & FDCAN_IT_BUS_OFF) != 0U)
     {
         bus->bus_off_count++;
-        port_bus_off_recover(hcan); /* см. can_manager.h - FDCAN сам из Bus-Off не выходит */
+        port_bus_off_recover(hcan); /* FDCAN сам из Bus-Off не выходит */
         CANMGR_LOG(LOG_CODE_CANMGR_BUS_OFF, bus->index, bus->bus_off_count);
     }
     if ((ErrorStatusITs & FDCAN_IT_RX_FIFO0_MESSAGE_LOST) != 0U)
@@ -833,7 +830,7 @@ void CANMGR_ErrorStatus_Handler(CANMGR_CAN_HandleTypeDef *hcan)
     if ((err & HAL_CAN_ERROR_BOF) != 0U)
     {
         bus->bus_off_count++;
-        port_bus_off_recover(hcan); /* см. can_manager.h - без ABOM bxCAN сам из Bus-Off не выходит */
+        port_bus_off_recover(hcan); /* без ABOM bxCAN сам из Bus-Off не выходит */
         CANMGR_LOG(LOG_CODE_CANMGR_BUS_OFF, bus->index, bus->bus_off_count);
     }
     if ((err & HAL_CAN_ERROR_RX_FOV0) != 0U)
