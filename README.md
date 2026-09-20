@@ -66,8 +66,45 @@ CANMGR_Send(bus, (1U << 8) | 5U, 1U, payload, sizeof(payload));
 CANMGR_SendLatest(bus, (2U << 8) | 5U, 1U, payload, sizeof(payload));
 ```
 
-Подключение обработчиков к HAL-callback-ам - см. "Шпаргалку по подключению" в `can_manager.h` и
-таблицы в [API_REFERENCE.md](API_REFERENCE.md).
+## Подключение обработчиков к HAL-callback-ам
+
+FDCAN (STM32H7 и т.п., `HAL_FDCAN_MODULE_ENABLED`):
+
+```c
+void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
+    CANMGR_RxFifo_Handler(hfdcan, RxFifo0ITs);
+}
+void HAL_FDCAN_TxFifoEmptyCallback(FDCAN_HandleTypeDef *hfdcan) {
+    CANMGR_TxComplete_Handler(hfdcan);
+}
+void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t ErrorStatusITs) {
+    CANMGR_ErrorStatus_Handler(hfdcan, ErrorStatusITs);
+}
+```
+
+NVIC: включить прерывание `FDCANx_IT0` (приём, опустошение Tx FIFO и Bus-Off по умолчанию
+роутятся на эту же линию у большинства чипов - сверьтесь с распределением строк вашего
+конкретного МК).
+
+bxCAN (STM32F0/F4 и т.п., `HAL_CAN_MODULE_ENABLED`):
+
+```c
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
+    CANMGR_RxFifo_Handler(hcan);
+}
+void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan) { CANMGR_TxComplete_Handler(hcan); }
+void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan) { CANMGR_TxComplete_Handler(hcan); }
+void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan) { CANMGR_TxComplete_Handler(hcan); }
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan) {
+    CANMGR_ErrorStatus_Handler(hcan);
+}
+```
+
+NVIC: обязательно включить `CANx_RX0_IRQn`, `CANx_TX_IRQn` и `CANx_SCE_IRQn` (Status Change
+Error) - без последнего события Bus-Off/переполнения Rx FIFO0 физически не дойдут до
+`HAL_CAN_ErrorCallback`, даже если нотификация активирована программно.
+
+Таблицы обработчиков - см. [API_REFERENCE.md](API_REFERENCE.md).
 
 ## Модель фильтров
 
