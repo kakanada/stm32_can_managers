@@ -44,6 +44,9 @@ static CANMGR_Handle_t s_bus_pool[CANMGR_MAX_BUSES];
  *  Внутренние утилиты общего назначения
  * ======================================================================== */
 
+/** @brief  Находит шину по хэндлу периферии.
+ *  @param  hcan Хэндл периферии.
+ *  @return Указатель на шину, либо NULL, если такой шины нет. */
 static CANMGR_Handle_t *canmgr_find_bus(const CANMGR_CAN_HandleTypeDef *hcan)
 {
     for (uint32_t i = 0U; i < CANMGR_MAX_BUSES; i++)
@@ -56,6 +59,8 @@ static CANMGR_Handle_t *canmgr_find_bus(const CANMGR_CAN_HandleTypeDef *hcan)
     return NULL;
 }
 
+/** @brief  Находит свободный слот в пуле шин.
+ *  @return Указатель на свободный слот, либо NULL, если пул исчерпан. */
 static CANMGR_Handle_t *canmgr_find_free_bus(void)
 {
     for (uint32_t i = 0U; i < CANMGR_MAX_BUSES; i++)
@@ -68,8 +73,11 @@ static CANMGR_Handle_t *canmgr_find_free_bus(void)
     return NULL;
 }
 
-/** Бинарный поиск ключа в отсортированном по возрастанию массиве.
- *  @retval индекс совпадения, либо -1, если ключа нет в массиве. */
+/** @brief  Бинарный поиск ключа в отсортированном по возрастанию массиве.
+ *  @param  sorted Отсортированный по возрастанию массив.
+ *  @param  count  Число элементов в массиве.
+ *  @param  key    Искомый ключ.
+ *  @return Индекс совпадения, либо -1, если ключа нет в массиве. */
 static int32_t canmgr_bsearch(const uint32_t *sorted, uint16_t count, uint32_t key)
 {
     int32_t lo = 0;
@@ -94,9 +102,12 @@ static int32_t canmgr_bsearch(const uint32_t *sorted, uint16_t count, uint32_t k
     return -1;
 }
 
-/** Позиция, куда нужно вставить key, чтобы массив остался отсортированным
- *  (аналог std::lower_bound) - используется при вставке нового фильтра в
- *  группу масок. */
+/** @brief  Позиция вставки key, сохраняющая сортировку массива (аналог
+ *          std::lower_bound).
+ *  @param  sorted Отсортированный по возрастанию массив.
+ *  @param  count  Число элементов в массиве.
+ *  @param  key    Значение для вставки.
+ *  @return Индекс позиции вставки. */
 static uint16_t canmgr_lower_bound(const uint32_t *sorted, uint16_t count, uint32_t key)
 {
     uint16_t lo = 0U;
@@ -131,6 +142,9 @@ static uint16_t canmgr_lower_bound(const uint32_t *sorted, uint16_t count, uint3
  *  здесь не бывает, можно использовать одно и то же значение для всех. */
 #define CANMGR_FDCAN_FILTER_INDEX   0U
 
+/** @brief  Переводит длину данных в код DLC поля HAL FDCAN.
+ *  @param  len Длина данных, 0..8 байт.
+ *  @return Код DLC, готовый для записи в поле заголовка HAL. */
 static uint32_t canmgr_len_to_fdcan_dlc(uint8_t len)
 {
     /* Classic CAN/FDCAN-кадр (без BRS/FD, см. "Чего в этой версии нет" в
@@ -140,6 +154,9 @@ static uint32_t canmgr_len_to_fdcan_dlc(uint8_t len)
     return ((uint32_t)len) << 16;
 }
 
+/** @brief  Переводит код DLC поля HAL FDCAN обратно в длину данных.
+ *  @param  dlc Код DLC из заголовка HAL.
+ *  @return Длина данных, отклампленная до CANMGR_MAX_DATA_LEN. */
 static uint8_t canmgr_fdcan_dlc_to_len(uint32_t dlc)
 {
     uint32_t code = (dlc >> 16) & 0x0FU;
@@ -149,6 +166,9 @@ static uint8_t canmgr_fdcan_dlc_to_len(uint32_t dlc)
     return (uint8_t)((code <= CANMGR_MAX_DATA_LEN) ? code : CANMGR_MAX_DATA_LEN);
 }
 
+/** @brief  Настраивает широкий приёмный фильтр FDCAN (Standard и Extended).
+ *  @param  hcan Хэндл периферии.
+ *  @return HAL_OK при успехе, иначе код ошибки HAL. */
 static HAL_StatusTypeDef port_configure_filter(CANMGR_CAN_HandleTypeDef *hcan)
 {
     /* Один широкий фильтр на каждый тип ID (Standard/Extended) - маска 0
@@ -183,6 +203,9 @@ static HAL_StatusTypeDef port_configure_filter(CANMGR_CAN_HandleTypeDef *hcan)
                                          FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE);
 }
 
+/** @brief  Включает нотификации приёма/ошибок/опустошения Tx для FDCAN.
+ *  @param  hcan Хэндл периферии.
+ *  @return HAL_OK при успехе, иначе код ошибки HAL. */
 static HAL_StatusTypeDef port_activate_notifications(CANMGR_CAN_HandleTypeDef *hcan)
 {
     return HAL_FDCAN_ActivateNotification(hcan,
@@ -190,16 +213,29 @@ static HAL_StatusTypeDef port_activate_notifications(CANMGR_CAN_HandleTypeDef *h
         FDCAN_IT_TX_FIFO_EMPTY | FDCAN_IT_BUS_OFF, 0U);
 }
 
+/** @brief  Запускает периферию FDCAN.
+ *  @param  hcan Хэндл периферии.
+ *  @return HAL_OK при успехе, иначе код ошибки HAL. */
 static HAL_StatusTypeDef port_start(CANMGR_CAN_HandleTypeDef *hcan)
 {
     return HAL_FDCAN_Start(hcan);
 }
 
+/** @brief  Число свободных слотов в аппаратном Tx FIFO FDCAN.
+ *  @param  hcan Хэндл периферии.
+ *  @return Число свободных слотов. */
 static uint32_t port_get_tx_free_level(CANMGR_CAN_HandleTypeDef *hcan)
 {
     return HAL_FDCAN_GetTxFifoFreeLevel(hcan);
 }
 
+/** @brief  Кладёт кадр напрямую в аппаратный Tx FIFO FDCAN.
+ *  @param  hcan        Хэндл периферии.
+ *  @param  id          Идентификатор кадра.
+ *  @param  is_extended 0 - Standard, 1 - Extended.
+ *  @param  data        Данные кадра, 0..8 байт.
+ *  @param  len         Длина данных.
+ *  @return HAL_OK при успехе, иначе код ошибки HAL. */
 static HAL_StatusTypeDef port_send(CANMGR_CAN_HandleTypeDef *hcan, uint32_t id,
                                     uint8_t is_extended, const uint8_t *data, uint8_t len)
 {
@@ -223,11 +259,19 @@ static HAL_StatusTypeDef port_send(CANMGR_CAN_HandleTypeDef *hcan, uint32_t id,
  *  официально задокументированное поведение периферии, программный сброс
  *  бита CCCR.INIT обязателен всегда (см. can_vesc_stm32/motor_vesc.c,
  *  port_bus_off_recover - тот же приём). */
+/** @param  hcan Хэндл периферии. */
 static void port_bus_off_recover(CANMGR_CAN_HandleTypeDef *hcan)
 {
     hcan->Instance->CCCR &= ~FDCAN_CCCR_INIT;
 }
 
+/** @brief  Читает один принятый кадр FDCAN из RxFIFO0.
+ *  @param  hcan        Хэндл периферии.
+ *  @param  id          [out] Идентификатор кадра.
+ *  @param  is_extended [out] 0 - Standard, 1 - Extended.
+ *  @param  data        [out] Буфер под данные, минимум CANMGR_MAX_DATA_LEN байт.
+ *  @param  len         [out] Длина данных.
+ *  @return 1, если кадр прочитан; 0, если FIFO пусто. */
 static uint8_t port_receive(CANMGR_CAN_HandleTypeDef *hcan, uint32_t *id,
                              uint8_t *is_extended, uint8_t *data, uint8_t *len)
 {
@@ -267,6 +311,9 @@ static uint8_t port_receive(CANMGR_CAN_HandleTypeDef *hcan, uint32_t *id,
  *  завершится неудачей (см. CANMGR_Init) - это безопасный, но не строго
  *  экономный выбор: 28 банков с большим запасом хватает на реалистичное
  *  число шин (CANMGR_MAX_BUSES по умолчанию - 4). */
+/** @brief  Выделяет следующий свободный номер банка фильтра bxCAN.
+ *  @param  hcan Хэндл периферии (CAN1 или CAN2).
+ *  @return Номер банка фильтра. */
 static uint32_t port_alloc_filter_bank(const CANMGR_CAN_HandleTypeDef *hcan)
 {
 #if defined(CAN2)
@@ -282,6 +329,9 @@ static uint32_t port_alloc_filter_bank(const CANMGR_CAN_HandleTypeDef *hcan)
     return s_can1_banks_used++;
 }
 
+/** @brief  Настраивает широкий приёмный фильтр bxCAN (Standard и Extended).
+ *  @param  hcan Хэндл периферии.
+ *  @return HAL_OK при успехе, иначе код ошибки HAL. */
 static HAL_StatusTypeDef port_configure_filter(CANMGR_CAN_HandleTypeDef *hcan)
 {
     CAN_FilterTypeDef filter;
@@ -301,6 +351,9 @@ static HAL_StatusTypeDef port_configure_filter(CANMGR_CAN_HandleTypeDef *hcan)
     return HAL_CAN_ConfigFilter(hcan, &filter);
 }
 
+/** @brief  Включает нотификации приёма/ошибок/опустошения Tx для bxCAN.
+ *  @param  hcan Хэндл периферии.
+ *  @return HAL_OK при успехе, иначе код ошибки HAL. */
 static HAL_StatusTypeDef port_activate_notifications(CANMGR_CAN_HandleTypeDef *hcan)
 {
     return HAL_CAN_ActivateNotification(hcan,
@@ -308,16 +361,29 @@ static HAL_StatusTypeDef port_activate_notifications(CANMGR_CAN_HandleTypeDef *h
         CAN_IT_BUSOFF | CAN_IT_RX_FIFO0_OVERRUN);
 }
 
+/** @brief  Запускает периферию bxCAN.
+ *  @param  hcan Хэндл периферии.
+ *  @return HAL_OK при успехе, иначе код ошибки HAL. */
 static HAL_StatusTypeDef port_start(CANMGR_CAN_HandleTypeDef *hcan)
 {
     return HAL_CAN_Start(hcan);
 }
 
+/** @brief  Число свободных почтовых ящиков Tx bxCAN.
+ *  @param  hcan Хэндл периферии.
+ *  @return Число свободных почтовых ящиков. */
 static uint32_t port_get_tx_free_level(CANMGR_CAN_HandleTypeDef *hcan)
 {
     return HAL_CAN_GetTxMailboxesFreeLevel(hcan);
 }
 
+/** @brief  Кладёт кадр напрямую в аппаратный почтовый ящик bxCAN.
+ *  @param  hcan        Хэндл периферии.
+ *  @param  id          Идентификатор кадра.
+ *  @param  is_extended 0 - Standard, 1 - Extended.
+ *  @param  data        Данные кадра, 0..8 байт.
+ *  @param  len         Длина данных.
+ *  @return HAL_OK при успехе, иначе код ошибки HAL. */
 static HAL_StatusTypeDef port_send(CANMGR_CAN_HandleTypeDef *hcan, uint32_t id,
                                     uint8_t is_extended, const uint8_t *data, uint8_t len)
 {
@@ -346,12 +412,20 @@ static HAL_StatusTypeDef port_send(CANMGR_CAN_HandleTypeDef *hcan, uint32_t id,
  *  если в CubeMX включена опция ABOM (Automatic Bus-Off Management). Если
  *  она выключена (частый случай по умолчанию), нужна программная помощь -
  *  Stop+Start периферии (см. can_vesc_stm32/motor_vesc.c, тот же приём). */
+/** @param  hcan Хэндл периферии. */
 static void port_bus_off_recover(CANMGR_CAN_HandleTypeDef *hcan)
 {
     HAL_CAN_Stop(hcan);
     HAL_CAN_Start(hcan);
 }
 
+/** @brief  Читает один принятый кадр bxCAN из RxFIFO0.
+ *  @param  hcan        Хэндл периферии.
+ *  @param  id          [out] Идентификатор кадра.
+ *  @param  is_extended [out] 0 - Standard, 1 - Extended.
+ *  @param  data        [out] Буфер под данные, минимум CANMGR_MAX_DATA_LEN байт.
+ *  @param  len         [out] Длина данных.
+ *  @return 1, если кадр прочитан; 0, если FIFO пусто. */
 static uint8_t port_receive(CANMGR_CAN_HandleTypeDef *hcan, uint32_t *id,
                              uint8_t *is_extended, uint8_t *data, uint8_t *len)
 {
@@ -389,6 +463,11 @@ static uint8_t port_receive(CANMGR_CAN_HandleTypeDef *hcan, uint32_t *id,
  *  бэкендов - см. архитектурное обоснование в can_manager.h)
  * ======================================================================== */
 
+/** @brief  Находит группу фильтров с данным значением маски.
+ *  @param  bus         Хэндл шины.
+ *  @param  mask        Значение маски.
+ *  @param  is_extended 0 - Standard, 1 - Extended.
+ *  @return Указатель на группу, либо NULL, если такой группы нет. */
 static canmgr_mask_group_t *canmgr_find_mask_group(CANMGR_Handle_t *bus, uint32_t mask,
                                                      uint8_t is_extended)
 {
@@ -403,6 +482,12 @@ static canmgr_mask_group_t *canmgr_find_mask_group(CANMGR_Handle_t *bus, uint32_
     return NULL;
 }
 
+/** @brief  Находит подходящий фильтр и вызывает его callback.
+ *  @param  bus         Хэндл шины.
+ *  @param  id          Идентификатор принятого кадра.
+ *  @param  is_extended 0 - Standard, 1 - Extended.
+ *  @param  data        Данные кадра.
+ *  @param  len         Длина данных. */
 static void canmgr_dispatch_frame(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_extended,
                                    const uint8_t *data, uint8_t len)
 {
@@ -442,7 +527,8 @@ static void canmgr_dispatch_frame(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_
 /** Продвигает очередь отправки: пока в очереди есть пакеты и в аппаратном
  *  буфере есть место - отправляет очередной пакет с головы очереди, строго
  *  по порядку постановки. Вызывается и из CANMGR_TxComplete_Handler (по
- *  прерыванию опустошения буфера), и из CANMGR_Send (см. ниже - почему). */
+ *  прерыванию опустошения буфера), и из CANMGR_Send (см. ниже - почему).
+ *  @param  bus Хэндл шины. */
 static void canmgr_service_queue(CANMGR_Handle_t *bus)
 {
     while (bus->tx_queue_depth > 0U)
@@ -475,6 +561,9 @@ static void canmgr_service_queue(CANMGR_Handle_t *bus)
  *  Публичный API
  * ======================================================================== */
 
+/** @brief  Инициализирует шину CAN/FDCAN (см. API_REFERENCE.md).
+ *  @param  config Конфигурация шины.
+ *  @return Хэндл шины, либо NULL при ошибке. */
 CANMGR_Handle_t *CANMGR_Init(const CANMGR_Config_t *config)
 {
     if ((config == NULL) || (config->hcan == NULL))
@@ -513,6 +602,14 @@ CANMGR_Handle_t *CANMGR_Init(const CANMGR_Config_t *config)
     return bus;
 }
 
+/** @brief  Регистрирует пару (фильтр, callback) на шине (см. API_REFERENCE.md).
+ *  @param  bus         Хэндл шины.
+ *  @param  id          Значение id фильтра.
+ *  @param  mask        Маска фильтра.
+ *  @param  is_extended 0 - Standard, 1 - Extended.
+ *  @param  callback    Обработчик принятых кадров.
+ *  @param  user_ctx    Контекст, передаваемый в callback.
+ *  @return Код результата регистрации. */
 CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint32_t mask,
                                           uint8_t is_extended, CANMGR_RxCallback_t callback,
                                           void *user_ctx)
@@ -626,6 +723,13 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
     return CANMGR_REG_OK;
 }
 
+/** @brief  Ставит кадр в очередь отправки шины (см. API_REFERENCE.md).
+ *  @param  bus         Хэндл шины.
+ *  @param  id          Идентификатор кадра.
+ *  @param  is_extended 0 - Standard, 1 - Extended.
+ *  @param  data        Данные кадра, 0..8 байт.
+ *  @param  len         Длина данных.
+ *  @return HAL_OK при успехе, иначе HAL_ERROR. */
 HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_extended,
                                const uint8_t *data, uint8_t len)
 {
@@ -679,6 +783,13 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
     return HAL_OK;
 }
 
+/** @brief  Отправляет актуальное значение с заменой в очереди (см. API_REFERENCE.md).
+ *  @param  bus         Хэндл шины.
+ *  @param  id          Идентификатор кадра.
+ *  @param  is_extended 0 - Standard, 1 - Extended.
+ *  @param  data        Данные кадра, 0..8 байт.
+ *  @param  len         Длина данных.
+ *  @return HAL_OK при успехе, иначе HAL_ERROR. */
 HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_extended,
                                      const uint8_t *data, uint8_t len)
 {
@@ -723,22 +834,34 @@ HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t i
     return CANMGR_Send(bus, id, is_extended, data, len);
 }
 
+/** @brief  Число событий Bus-Off с момента CANMGR_Init().
+ *  @param  bus Хэндл шины.
+ *  @return Счётчик событий, либо 0 при bus == NULL. */
 uint32_t CANMGR_GetBusOffCount(const CANMGR_Handle_t *bus)
 {
     return (bus != NULL) ? bus->bus_off_count : 0U;
 }
 
+/** @brief  Число переполнений Rx FIFO0 с момента CANMGR_Init().
+ *  @param  bus Хэндл шины.
+ *  @return Счётчик переполнений, либо 0 при bus == NULL. */
 uint32_t CANMGR_GetRxOverflowCount(const CANMGR_Handle_t *bus)
 {
     return (bus != NULL) ? bus->rx_overflow_count : 0U;
 }
 
+/** @brief  Текущая длина программной очереди отправки.
+ *  @param  bus Хэндл шины.
+ *  @return Длина очереди, либо 0 при bus == NULL. */
 uint16_t CANMGR_GetTxQueueDepth(const CANMGR_Handle_t *bus)
 {
     return (bus != NULL) ? bus->tx_queue_depth : 0U;
 }
 
 #if defined(CANMGR_BACKEND_FDCAN)
+/** @brief  Обработчик приёма FDCAN - вызывать из HAL_FDCAN_RxFifo0Callback.
+ *  @param  hcan        Хэндл периферии.
+ *  @param  RxFifo0ITs  Флаги причины прерывания из HAL. */
 void CANMGR_RxFifo_Handler(CANMGR_CAN_HandleTypeDef *hcan, uint32_t RxFifo0ITs)
 {
     CANMGR_Handle_t *bus = (hcan != NULL) ? canmgr_find_bus(hcan) : NULL;
@@ -764,6 +887,8 @@ void CANMGR_RxFifo_Handler(CANMGR_CAN_HandleTypeDef *hcan, uint32_t RxFifo0ITs)
     }
 }
 #else
+/** @brief  Обработчик приёма bxCAN - вызывать из HAL_CAN_RxFifo0MsgPendingCallback.
+ *  @param  hcan Хэндл периферии. */
 void CANMGR_RxFifo_Handler(CANMGR_CAN_HandleTypeDef *hcan)
 {
     CANMGR_Handle_t *bus = (hcan != NULL) ? canmgr_find_bus(hcan) : NULL;
@@ -784,6 +909,8 @@ void CANMGR_RxFifo_Handler(CANMGR_CAN_HandleTypeDef *hcan)
 }
 #endif
 
+/** @brief  Обработчик опустошения Tx - продвигает программную очередь отправки.
+ *  @param  hcan Хэндл периферии. */
 void CANMGR_TxComplete_Handler(CANMGR_CAN_HandleTypeDef *hcan)
 {
     CANMGR_Handle_t *bus = (hcan != NULL) ? canmgr_find_bus(hcan) : NULL;
@@ -796,6 +923,9 @@ void CANMGR_TxComplete_Handler(CANMGR_CAN_HandleTypeDef *hcan)
 }
 
 #if defined(CANMGR_BACKEND_FDCAN)
+/** @brief  Обработчик ошибок FDCAN - вызывать из HAL_FDCAN_ErrorStatusCallback.
+ *  @param  hcan           Хэндл периферии.
+ *  @param  ErrorStatusITs Флаги причины прерывания из HAL. */
 void CANMGR_ErrorStatus_Handler(CANMGR_CAN_HandleTypeDef *hcan, uint32_t ErrorStatusITs)
 {
     CANMGR_Handle_t *bus = (hcan != NULL) ? canmgr_find_bus(hcan) : NULL;
@@ -817,6 +947,8 @@ void CANMGR_ErrorStatus_Handler(CANMGR_CAN_HandleTypeDef *hcan, uint32_t ErrorSt
     }
 }
 #else
+/** @brief  Обработчик ошибок bxCAN - вызывать из HAL_CAN_ErrorCallback.
+ *  @param  hcan Хэндл периферии. */
 void CANMGR_ErrorStatus_Handler(CANMGR_CAN_HandleTypeDef *hcan)
 {
     CANMGR_Handle_t *bus = (hcan != NULL) ? canmgr_find_bus(hcan) : NULL;
