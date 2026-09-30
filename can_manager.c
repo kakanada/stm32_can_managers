@@ -4,8 +4,8 @@
  * @brief   Реализация единого менеджера шины CAN/FDCAN для STM32 - см.
  *          README.md / API_REFERENCE.md за архитектурой и API.
  * @author  Mechanic
- * @date    19.09.2026
- * @version 0.4
+ * @date    01.10.2026
+ * @version 0.5
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -33,6 +33,13 @@
 #else
 #define CANMGR_LOG(code, source_id, value) ((void)0)
 #endif
+
+/* Критическая секция, безопасная для вложенного вызова (сохраняет и
+ * восстанавливает PRIMASK, а не включает прерывания безусловно) - иначе
+ * вызов из critical section вызывающего кода (например, из его собственного
+ * __disable_irq()) преждевременно включил бы прерывания прямо посреди неё. */
+#define CANMGR_ENTER_CRITICAL(primask) do { (primask) = __get_PRIMASK(); __disable_irq(); } while (0)
+#define CANMGR_EXIT_CRITICAL(primask)  do { if ((primask) == 0U) { __enable_irq(); } } while (0)
 
 /* ========================================================================
  *  Статический пул шин (без malloc, как во всех библиотеках этой базы)
@@ -142,28 +149,41 @@ static uint16_t canmgr_lower_bound(const uint32_t *sorted, uint16_t count, uint3
  *  здесь не бывает, можно использовать одно и то же значение для всех. */
 #define CANMGR_FDCAN_FILTER_INDEX   0U
 
+/* Таблица кодов DLC для длин 0..8 - берётся из макросов HAL, а не считается
+ * сдвигом вручную: в разных версиях HAL FDCAN_DLC_BYTES_x определены
+ * по-разному (где-то уже сдвинуты в позицию поля, где-то нет - HAL сам
+ * досдвигает при записи/чтении заголовка), ручной сдвиг здесь приводил к
+ * двойному сдвигу и передаче/приёму кадров с фактической длиной 0. */
+static const uint32_t canmgr_fdcan_dlc_table[CANMGR_MAX_DATA_LEN + 1U] =
+{
+    FDCAN_DLC_BYTES_0, FDCAN_DLC_BYTES_1, FDCAN_DLC_BYTES_2, FDCAN_DLC_BYTES_3,
+    FDCAN_DLC_BYTES_4, FDCAN_DLC_BYTES_5, FDCAN_DLC_BYTES_6, FDCAN_DLC_BYTES_7,
+    FDCAN_DLC_BYTES_8
+};
+
 /** @brief  Переводит длину данных в код DLC поля HAL FDCAN.
  *  @param  len Длина данных, 0..8 байт.
  *  @return Код DLC, готовый для записи в поле заголовка HAL. */
 static uint32_t canmgr_len_to_fdcan_dlc(uint8_t len)
 {
-    /* Classic CAN/FDCAN-кадр (без BRS/FD, см. "Чего в этой версии нет" в
-     * can_manager.h): для длины 0..8 код DLC в поле HAL совпадает с самим
-     * числом байт, сдвинутым в позицию поля (биты 19:16) - см. макросы
-     * FDCAN_DLC_BYTES_0..FDCAN_DLC_BYTES_8 в HAL. */
-    return ((uint32_t)len) << 16;
+    return canmgr_fdcan_dlc_table[(len <= CANMGR_MAX_DATA_LEN) ? len : CANMGR_MAX_DATA_LEN];
 }
 
 /** @brief  Переводит код DLC поля HAL FDCAN обратно в длину данных.
  *  @param  dlc Код DLC из заголовка HAL.
- *  @return Длина данных, отклампленная до CANMGR_MAX_DATA_LEN. */
+ *  @return Длина данных, 0, если код не совпал ни с одним из 0..8. */
 static uint8_t canmgr_fdcan_dlc_to_len(uint32_t dlc)
 {
-    uint32_t code = (dlc >> 16) & 0x0FU;
     /* Коды 9..15 - это FD-длины (12..64 байт), сюда попасть не должны, т.к.
-     * мы принимаем только Classic-кадры - на всякий случай защищаемся от
-     * выхода за границы буфера данных. */
-    return (uint8_t)((code <= CANMGR_MAX_DATA_LEN) ? code : CANMGR_MAX_DATA_LEN);
+     * мы принимаем только Classic-кадры. */
+    for (uint8_t len = 0U; len <= CANMGR_MAX_DATA_LEN; len++)
+    {
+        if (canmgr_fdcan_dlc_table[len] == dlc)
+        {
+            return len;
+        }
+    }
+    return 0U;
 }
 
 /** @brief  Настраивает широкий приёмный фильтр FDCAN (Standard и Extended).
@@ -538,9 +558,10 @@ static void canmgr_service_queue(CANMGR_Handle_t *bus)
             break;
         }
 
-        __disable_irq();
+        uint32_t primask;
+        CANMGR_ENTER_CRITICAL(primask);
         canmgr_tx_item_t item = bus->tx_queue[bus->tx_head];
-        __enable_irq();
+        CANMGR_EXIT_CRITICAL(primask);
 
         if (port_send(bus->config.hcan, item.id, item.is_extended, item.data, item.len) != HAL_OK)
         {
@@ -550,10 +571,10 @@ static void canmgr_service_queue(CANMGR_Handle_t *bus)
             break;
         }
 
-        __disable_irq();
+        CANMGR_ENTER_CRITICAL(primask);
         bus->tx_head = (uint16_t)((bus->tx_head + 1U) % CANMGR_TX_QUEUE_SIZE);
         bus->tx_queue_depth--;
-        __enable_irq();
+        CANMGR_EXIT_CRITICAL(primask);
     }
 }
 
@@ -583,6 +604,19 @@ CANMGR_Handle_t *CANMGR_Init(const CANMGR_Config_t *config)
         CANMGR_LOG(LOG_CODE_CANMGR_INIT_FAIL, 0xFFFFU, 0); /* пул шин исчерпан, конкретной шины ещё нет */
         return NULL; /* исчерпан CANMGR_MAX_BUSES */
     }
+
+#if defined(CANMGR_BACKEND_FDCAN)
+    /* Без выделенных в Message RAM элементов фильтров HAL_FDCAN_ConfigFilter()
+     * тихо пишет за пределы выделенной области и возвращает HAL_OK (assert
+     * в релизе выключен) - приём при этом не работает вообще, но ошибка не
+     * проявляется. Проверяем явно, вместо тихого "молча ничего не принимает".
+     * См. README.md - "Требования к настройке в CubeMX". */
+    if ((config->hcan->Init.StdFiltersNbr < 1U) || (config->hcan->Init.ExtFiltersNbr < 1U))
+    {
+        CANMGR_LOG(LOG_CODE_CANMGR_INIT_FAIL, 0xFFFFU, 0);
+        return NULL;
+    }
+#endif
 
     memset(bus, 0, sizeof(*bus));
     bus->used         = 1U;
@@ -705,7 +739,8 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
      * временно не найти уже существующий, корректно зарегистрированный
      * фильтр - кадр был бы молча потерян не из-за отсутствия подписки, а
      * из-за гонки при регистрации СОВСЕМ ДРУГОГО фильтра. */
-    __disable_irq();
+    uint32_t primask;
+    CANMGR_ENTER_CRITICAL(primask);
 
     uint32_t key = id & mask;
     uint16_t pos = canmgr_lower_bound(group->sorted_key, group->count, key);
@@ -718,7 +753,7 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
     group->filter_index[pos] = filter_idx;
     group->count++;
 
-    __enable_irq();
+    CANMGR_EXIT_CRITICAL(primask);
 
     return CANMGR_REG_OK;
 }
@@ -742,7 +777,8 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
         len = CANMGR_MAX_DATA_LEN;
     }
 
-    __disable_irq();
+    uint32_t primask;
+    CANMGR_ENTER_CRITICAL(primask);
 
     /* Явное требование пользователя: новый пакет НЕ должен обгонять уже
      * стоящие в очереди пакеты. Поэтому прямая отправка в аппаратный
@@ -754,7 +790,7 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
     {
         if (port_send(bus->config.hcan, id, is_extended, data, len) == HAL_OK)
         {
-            __enable_irq();
+            CANMGR_EXIT_CRITICAL(primask);
             return HAL_OK;
         }
         /* Редкая гонка (место в буфере успело исчезнуть) - падаем в
@@ -763,7 +799,7 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
 
     if (bus->tx_queue_depth >= CANMGR_TX_QUEUE_SIZE)
     {
-        __enable_irq();
+        CANMGR_EXIT_CRITICAL(primask);
         CANMGR_LOG(LOG_CODE_CANMGR_TX_QUEUE_FULL, bus->index, id);
         return HAL_ERROR; /* очередь переполнена */
     }
@@ -779,7 +815,7 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
     bus->tx_tail = (uint16_t)((bus->tx_tail + 1U) % CANMGR_TX_QUEUE_SIZE);
     bus->tx_queue_depth++;
 
-    __enable_irq();
+    CANMGR_EXIT_CRITICAL(primask);
     return HAL_OK;
 }
 
@@ -810,7 +846,8 @@ HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t i
      * программную очередь (ушедший в аппаратный буфер), этим поиском не
      * достаётся - и не должен: он уже был самым актуальным значением на
      * момент, когда до него дошла очередь. */
-    __disable_irq();
+    uint32_t primask;
+    CANMGR_ENTER_CRITICAL(primask);
     for (uint16_t n = 0U; n < bus->tx_queue_depth; n++)
     {
         uint16_t idx = (uint16_t)((bus->tx_head + n) % CANMGR_TX_QUEUE_SIZE);
@@ -822,11 +859,11 @@ HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t i
             {
                 memcpy(item->data, data, len);
             }
-            __enable_irq();
+            CANMGR_EXIT_CRITICAL(primask);
             return HAL_OK;
         }
     }
-    __enable_irq();
+    CANMGR_EXIT_CRITICAL(primask);
 
     /* Пакета с таким id в очереди нет - обычная отправка: прямо в
      * аппаратный буфер (если очередь пуста и есть место) либо новым

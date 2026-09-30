@@ -84,7 +84,8 @@ CANMGR_Handle_t *CANMGR_Init(const CANMGR_Config_t *config);
 | `config` | Заполненная конфигурация. |
 
 **Возврат:** указатель на хэндл шины, либо `NULL` при ошибке (`config == NULL`, `config->hcan ==
-NULL`, исчерпан `CANMGR_MAX_BUSES`, либо ошибка HAL при настройке).
+NULL`, исчерпан `CANMGR_MAX_BUSES`, для FDCAN - `hcan->Init.StdFiltersNbr`/`ExtFiltersNbr` меньше 1
+(см. README.md - "Требования к настройке в CubeMX"), либо ошибка HAL при настройке).
 
 ## Регистрация фильтров
 
