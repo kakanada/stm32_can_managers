@@ -203,6 +203,8 @@ HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t i
 | `LOG_CODE_CANMGR_TX_QUEUE_FULL` | HIGH | `CANMGR_Send()`/`CANMGR_SendLatest()` отклонили пакет - очередь переполнена | `id` кадра |
 | `LOG_CODE_CANMGR_RX_OVERFLOW` | MEDIUM | Переполнение аппаратного Rx FIFO0 | `rx_overflow_count` после инкремента |
 | `LOG_CODE_CANMGR_BUS_OFF` | HIGH | Обнаружен и автовосстановлен Bus-Off | `bus_off_count` после инкремента |
+| `LOG_CODE_CANMGR_NO_AUTORETRANS` | MEDIUM | `CANMGR_Init()` - `hcan->Init.AutoRetransmission == DISABLE` (не блокирует инициализацию, см. README.md) | `0` |
 
 Во всех случаях `source_id` в `LOGGER_Log()` - это `bus->index` (при исчерпании `CANMGR_MAX_BUSES`,
-когда конкретной шины ещё нет, - `0xFFFF`).
+когда конкретной шины ещё нет, либо при предупреждении `LOG_CODE_CANMGR_NO_AUTORETRANS` - до того, как
+индекс присвоен хэндлу, - `0xFFFF`).

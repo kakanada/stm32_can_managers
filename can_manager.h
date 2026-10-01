@@ -6,7 +6,7 @@
  *          (id+маска -> callback) и общую неблокирующую очередь отправки.
  * @author  Mechanic
  * @date    01.10.2026
- * @version 0.5
+ * @version 0.6
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия

@@ -5,7 +5,7 @@
  *          README.md / API_REFERENCE.md за архитектурой и API.
  * @author  Mechanic
  * @date    01.10.2026
- * @version 0.5
+ * @version 0.6
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -617,6 +617,19 @@ CANMGR_Handle_t *CANMGR_Init(const CANMGR_Config_t *config)
         return NULL;
     }
 #endif
+
+    /* AutoRetransmission == DISABLE (NART/CCCR.DAR) - кадр, проигравший
+     * арбитраж или получивший ошибку, аппаратно ОТМЕНЯЕТСЯ без повтора, а
+     * CANMGR_Send всё равно вернёт HAL_OK (отправка в аппаратный буфер
+     * прошла успешно - дальнейшая судьба кадра решается уже железом). На
+     * шине с несколькими активными узлами (типичный случай) это приводит к
+     * молчаливой потере части кадров. Не блокируем инициализацию - для
+     * части применений отправка без повторов осознанно нужна - только
+     * предупреждаем, если логгер подключён. */
+    if (config->hcan->Init.AutoRetransmission == DISABLE)
+    {
+        CANMGR_LOG(LOG_CODE_CANMGR_NO_AUTORETRANS, 0xFFFFU, 0);
+    }
 
     memset(bus, 0, sizeof(*bus));
     bus->used         = 1U;
