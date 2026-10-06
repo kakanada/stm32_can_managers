@@ -204,6 +204,10 @@ HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t i
 | `LOG_CODE_CANMGR_RX_OVERFLOW` | MEDIUM | Переполнение аппаратного Rx FIFO0 | `rx_overflow_count` после инкремента |
 | `LOG_CODE_CANMGR_BUS_OFF` | HIGH | Обнаружен и автовосстановлен Bus-Off | `bus_off_count` после инкремента |
 | `LOG_CODE_CANMGR_NO_AUTORETRANS` | MEDIUM | `CANMGR_Init()` - `hcan->Init.AutoRetransmission == DISABLE` (не блокирует инициализацию, см. README.md) | `0` |
+| `LOG_CODE_CANMGR_TX_INVALID_ARG` | MEDIUM | `CANMGR_Send()`/`CANMGR_SendLatest()` - `bus == NULL` либо `data == NULL` при `len > 0` | `id` кадра |
+| `LOG_CODE_CANMGR_TX_LEN_CLAMPED` | LOW | `CANMGR_Send()`/`CANMGR_SendLatest()` - `len > 8`, длина обрезана до 8 | запрошенная `len` |
+| `LOG_CODE_CANMGR_TX_HW_FAIL` | MEDIUM | Аппаратная отправка вернула ошибку при свободном слоте (редкая гонка); кадр не потерян - остаётся/встаёт в программную очередь | `id` кадра |
+| `LOG_CODE_CANMGR_RX_BAD_DLC` | LOW | bxCAN принял кадр с DLC > 8, длина обрезана до 8; пишется на 1-м, 2-м, 4-м, 8-м... событии | принятый DLC |
 
 Во всех случаях `source_id` в `LOGGER_Log()` - это `bus->index` (при исчерпании `CANMGR_MAX_BUSES`,
 когда конкретной шины ещё нет, либо при предупреждении `LOG_CODE_CANMGR_NO_AUTORETRANS` - до того, как

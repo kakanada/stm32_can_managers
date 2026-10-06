@@ -5,7 +5,7 @@
  *          README.md / API_REFERENCE.md за архитектурой и API.
  * @author  Mechanic
  * @date    01.10.2026
- * @version 0.6
+ * @version 0.7
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -471,6 +471,15 @@ static uint8_t port_receive(CANMGR_CAN_HandleTypeDef *hcan, uint32_t *id,
     *len = (uint8_t)header.DLC;
     if (*len > CANMGR_MAX_DATA_LEN)
     {
+        /* Лог только на 1-м, 2-м, 4-м, 8-м... событии: неисправный узел
+         * может слать такие кадры непрерывно, а логгер зовётся из
+         * прерывания Rx. */
+        static uint32_t bad_dlc_count;
+        bad_dlc_count++;
+        if ((bad_dlc_count & (bad_dlc_count - 1U)) == 0U)
+        {
+            CANMGR_LOG(LOG_CODE_CANMGR_RX_BAD_DLC, 0xFFFFU, header.DLC);
+        }
         *len = CANMGR_MAX_DATA_LEN;
     }
     return 1U;
@@ -568,6 +577,7 @@ static void canmgr_service_queue(CANMGR_Handle_t *bus)
             /* Редкая гонка (свободный слот успел занять кто-то ещё между
              * проверкой уровня и самой отправкой) - пакет остаётся в
              * голове очереди, попробуем снова на следующем событии. */
+            CANMGR_LOG(LOG_CODE_CANMGR_TX_HW_FAIL, bus->index, item.id);
             break;
         }
 
@@ -589,6 +599,7 @@ CANMGR_Handle_t *CANMGR_Init(const CANMGR_Config_t *config)
 {
     if ((config == NULL) || (config->hcan == NULL))
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_INIT_FAIL, 0xFFFFU, 0); /* конкретной шины ещё нет */
         return NULL;
     }
 
@@ -663,6 +674,8 @@ CANMGR_RegStatus_t CANMGR_RegisterFilter(CANMGR_Handle_t *bus, uint32_t id, uint
 {
     if ((bus == NULL) || (callback == NULL))
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_REG_REJECTED, (bus != NULL) ? bus->index : 0xFFFFU,
+                   CANMGR_REG_ERR_INVALID_ARG);
         return CANMGR_REG_ERR_INVALID_ARG;
     }
 
@@ -783,14 +796,17 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
 {
     if ((bus == NULL) || ((data == NULL) && (len > 0U)))
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_TX_INVALID_ARG, (bus != NULL) ? bus->index : 0xFFFFU, id);
         return HAL_ERROR;
     }
     if (len > CANMGR_MAX_DATA_LEN)
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_TX_LEN_CLAMPED, bus->index, len);
         len = CANMGR_MAX_DATA_LEN;
     }
 
     uint32_t primask;
+    uint8_t  hw_race = 0U;
     CANMGR_ENTER_CRITICAL(primask);
 
     /* Явное требование пользователя: новый пакет НЕ должен обгонять уже
@@ -808,11 +824,16 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
         }
         /* Редкая гонка (место в буфере успело исчезнуть) - падаем в
          * программный путь ниже, как обычно. */
+        hw_race = 1U;
     }
 
     if (bus->tx_queue_depth >= CANMGR_TX_QUEUE_SIZE)
     {
         CANMGR_EXIT_CRITICAL(primask);
+        if (hw_race != 0U)
+        {
+            CANMGR_LOG(LOG_CODE_CANMGR_TX_HW_FAIL, bus->index, id);
+        }
         CANMGR_LOG(LOG_CODE_CANMGR_TX_QUEUE_FULL, bus->index, id);
         return HAL_ERROR; /* очередь переполнена */
     }
@@ -829,6 +850,10 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
     bus->tx_queue_depth++;
 
     CANMGR_EXIT_CRITICAL(primask);
+    if (hw_race != 0U)
+    {
+        CANMGR_LOG(LOG_CODE_CANMGR_TX_HW_FAIL, bus->index, id); /* вне критической секции */
+    }
     return HAL_OK;
 }
 
@@ -844,10 +869,12 @@ HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t i
 {
     if ((bus == NULL) || ((data == NULL) && (len > 0U)))
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_TX_INVALID_ARG, (bus != NULL) ? bus->index : 0xFFFFU, id);
         return HAL_ERROR;
     }
     if (len > CANMGR_MAX_DATA_LEN)
     {
+        CANMGR_LOG(LOG_CODE_CANMGR_TX_LEN_CLAMPED, bus->index, len);
         len = CANMGR_MAX_DATA_LEN;
     }
 
