@@ -4,8 +4,8 @@
  * @brief   Реализация единого менеджера шины CAN/FDCAN для STM32 - см.
  *          README.md / API_REFERENCE.md за архитектурой и API.
  * @author  Mechanic
- * @date    01.10.2026
- * @version 0.7
+ * @date    09.10.2026
+ * @version 0.8
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -805,6 +805,7 @@ HAL_StatusTypeDef CANMGR_Send(CANMGR_Handle_t *bus, uint32_t id, uint8_t is_exte
         len = CANMGR_MAX_DATA_LEN;
     }
 
+    CANMGR_Process(bus); /* отложенное восстановление после Bus-Off */
     uint32_t primask;
     uint8_t  hw_race = 0U;
     CANMGR_ENTER_CRITICAL(primask);
@@ -986,6 +987,66 @@ void CANMGR_RxFifo_Handler(CANMGR_CAN_HandleTypeDef *hcan)
 }
 #endif
 
+/** Максимальная пауза перед восстановлением при серии Bus-Off, мс. */
+#define CANMGR_BUS_OFF_MAX_DELAY_MS  1000U
+
+/** @brief  Реакция на Bus-Off: восстановление сразу либо с паузой при серии.
+ *  @param  bus  Шина.
+ *  @param  hcan Хэндл периферии. */
+static void canmgr_bus_off_event(CANMGR_Handle_t *bus, CANMGR_CAN_HandleTypeDef *hcan)
+{
+    uint32_t delay = 0U;
+
+    if (bus->bus_off_streak < 255U)
+    {
+        bus->bus_off_streak++;
+    }
+    if (bus->bus_off_streak > 1U)
+    {
+        uint8_t shift = (uint8_t)(bus->bus_off_streak - 2U);
+        delay = (shift >= 7U) ? CANMGR_BUS_OFF_MAX_DELAY_MS : (10UL << shift);
+        if (delay > CANMGR_BUS_OFF_MAX_DELAY_MS)
+        {
+            delay = CANMGR_BUS_OFF_MAX_DELAY_MS;
+        }
+    }
+
+    if (delay == 0U)
+    {
+        port_bus_off_recover(hcan);
+    }
+    else
+    {
+        bus->recover_due_ms = HAL_GetTick() + delay;
+        bus->recover_pending = 1U;
+    }
+}
+
+/** @brief  Выполняет отложенное восстановление после Bus-Off (см. заголовок).
+ *  @param  bus  Шина. */
+void CANMGR_Process(CANMGR_Handle_t *bus)
+{
+    if ((bus == NULL) || (bus->recover_pending == 0U))
+    {
+        return;
+    }
+    if ((int32_t)(HAL_GetTick() - bus->recover_due_ms) < 0)
+    {
+        return;
+    }
+
+    uint32_t primask;
+    CANMGR_ENTER_CRITICAL(primask);
+    uint8_t go = bus->recover_pending;
+    bus->recover_pending = 0U;
+    CANMGR_EXIT_CRITICAL(primask);
+
+    if (go != 0U)
+    {
+        port_bus_off_recover(bus->config.hcan);
+    }
+}
+
 /** @brief  Обработчик опустошения Tx - продвигает программную очередь отправки.
  *  @param  hcan Хэндл периферии. */
 void CANMGR_TxComplete_Handler(CANMGR_CAN_HandleTypeDef *hcan)
@@ -996,6 +1057,7 @@ void CANMGR_TxComplete_Handler(CANMGR_CAN_HandleTypeDef *hcan)
         return; /* не наша шина */
     }
 
+    bus->bus_off_streak = 0U; /* отправка прошла: узел на шине есть */
     canmgr_service_queue(bus);
 }
 
@@ -1014,7 +1076,7 @@ void CANMGR_ErrorStatus_Handler(CANMGR_CAN_HandleTypeDef *hcan, uint32_t ErrorSt
     if ((ErrorStatusITs & FDCAN_IT_BUS_OFF) != 0U)
     {
         bus->bus_off_count++;
-        port_bus_off_recover(hcan); /* FDCAN сам из Bus-Off не выходит */
+        canmgr_bus_off_event(bus, hcan);
         CANMGR_LOG(LOG_CODE_CANMGR_BUS_OFF, bus->index, bus->bus_off_count);
     }
     if ((ErrorStatusITs & FDCAN_IT_RX_FIFO0_MESSAGE_LOST) != 0U)
@@ -1039,7 +1101,7 @@ void CANMGR_ErrorStatus_Handler(CANMGR_CAN_HandleTypeDef *hcan)
     if ((err & HAL_CAN_ERROR_BOF) != 0U)
     {
         bus->bus_off_count++;
-        port_bus_off_recover(hcan); /* без ABOM bxCAN сам из Bus-Off не выходит */
+        canmgr_bus_off_event(bus, hcan);
         CANMGR_LOG(LOG_CODE_CANMGR_BUS_OFF, bus->index, bus->bus_off_count);
     }
     if ((err & HAL_CAN_ERROR_RX_FOV0) != 0U)

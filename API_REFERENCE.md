@@ -166,6 +166,12 @@ HAL_StatusTypeDef CANMGR_SendLatest(CANMGR_Handle_t *bus, uint32_t id, uint8_t i
 | `uint32_t CANMGR_GetRxOverflowCount(const CANMGR_Handle_t *bus)` | Число переполнений Rx FIFO0 с момента `CANMGR_Init()`. |
 | `uint16_t CANMGR_GetTxQueueDepth(const CANMGR_Handle_t *bus)` | Текущая длина программной очереди отправки. |
 
+## Восстановление после Bus-Off
+
+| Функция | Назначение |
+|---|---|
+| `void CANMGR_Process(CANMGR_Handle_t *bus)` | Выполняет отложенное восстановление после Bus-Off. Первый Bus-Off восстанавливается сразу; при повторных подряд (без успешной отправки между ними) пауза 10, 20, 40 ... 1000 мс. Вызывать периодически из основного цикла; также вызывается внутри `CANMGR_Send()`. Сбрасывается успешной отправкой. |
+
 Все три возвращают `0`, если `bus == NULL`.
 
 ## Обработчики прерываний

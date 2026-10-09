@@ -5,8 +5,8 @@
  *          периферией, даёт потребителям регистрировать фильтры приёма
  *          (id+маска -> callback) и общую неблокирующую очередь отправки.
  * @author  Mechanic
- * @date    01.10.2026
- * @version 0.7
+ * @date    09.10.2026
+ * @version 0.8
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -236,6 +236,9 @@ typedef struct CANMGR_Handle_s
     uint8_t               mask_group_count; /* фактически занято в mask_groups[] */
     canmgr_tx_item_t      tx_queue[CANMGR_TX_QUEUE_SIZE];       /* кольцевая очередь отправки */
     uint16_t              tx_head;          /* индекс головы очереди - трогает только canmgr_service_queue, всегда под __disable_irq */
+    volatile uint8_t      bus_off_streak;   /* подряд Bus-Off без единой успешной отправки между ними */
+    volatile uint8_t      recover_pending;  /* 1 - восстановление после Bus-Off отложено (пауза) */
+    volatile uint32_t     recover_due_ms;   /* момент (HAL_GetTick), когда можно восстанавливать */
     uint16_t              tx_tail;          /* индекс хвоста очереди - трогает только CANMGR_Send, всегда под __disable_irq */
 } CANMGR_Handle_t;
 
@@ -428,6 +431,18 @@ void CANMGR_RxFifo_Handler(CANMGR_CAN_HandleTypeDef *hcan);
  * @param  hcan  хэндл шины, пришедший в ваш HAL-колбэк как есть
  */
 void CANMGR_TxComplete_Handler(CANMGR_CAN_HandleTypeDef *hcan);
+
+/**
+ * @brief  Выполняет отложенное восстановление после Bus-Off, когда пауза
+ *         закончилась. Первый Bus-Off восстанавливается сразу, при повторных
+ *         подряд (без успешной отправки между ними, например на шине нет
+ *         других узлов) пауза растёт 10, 20, 40 ... до 1000 мс, чтобы
+ *         шторм прерываний не нагружал МК. Вызывать периодически из
+ *         основного цикла; также вызывается внутри CANMGR_Send().
+ *
+ * @param  bus  хэндл шины (NULL игнорируется)
+ */
+void CANMGR_Process(CANMGR_Handle_t *bus);
 
 /**
  * @brief  Обработчик событий ошибок шины (Bus-Off, переполнение Rx FIFO0).
